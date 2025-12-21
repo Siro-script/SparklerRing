@@ -22,11 +22,14 @@ local Tab = Window:MakeTab({ Name = "AURA", Icon = "rbxassetid://448336338" })
 
 -- 設定変数
 local Enabled = false
+local FollowPlayerEnabled = false
+local TargetPlayerName = ""
+
 local RingHeight = 5.0
-local RingSize = 5.0        -- 形状全体のサイズ
-local ObjectCount = 10
+local RingSize = 5.0
+local ObjectCount = 30
 local RotationSpeed = 20.0
-local ShapeType = "Circle"  -- 形状タイプ
+local ShapeType = "Circle"
 
 local list = {}
 local loopConn = nil
@@ -36,6 +39,19 @@ local tAccum = 0
 local function HRP()
     local c = LP.Character or LP.CharacterAdded:Wait()
     return c:FindFirstChild("HumanoidRootPart")
+end
+
+-- ターゲットプレイヤーのHRP取得
+local function getTargetHRP()
+    if TargetPlayerName == "" then return nil end
+    
+    local targetPlayer = Players:FindFirstChild(TargetPlayerName)
+    if not targetPlayer then return nil end
+    
+    local char = targetPlayer.Character
+    if not char then return nil end
+    
+    return char:FindFirstChild("HumanoidRootPart")
 end
 
 -- モデルからパーツ取得
@@ -132,9 +148,10 @@ end
 
 -- ★ 形状計算関数 ★
 local function getShapePosition(index, total, size, rotation)
+    local t = (index - 1) / total
+    
     if ShapeType == "Circle" then
         -- 円形
-        local t = (index - 1) / total
         local angle = t * math.pi * 2 + rotation
         local radius = size / 2
         return Vector3.new(
@@ -143,45 +160,22 @@ local function getShapePosition(index, total, size, rotation)
             radius * math.sin(angle)
         )
         
-    elseif ShapeType == "Star" then
-        -- 星形 (各オブジェクトを星の頂点に配置)
-        local outerRadius = size / 2
-        local innerRadius = outerRadius * 0.38
-        
-        -- 各オブジェクトに対して星の形を作る
-        local angleStep = (math.pi * 2) / total
-        local baseAngle = (index - 1) * angleStep + rotation
-        
-        -- 5つの頂点のどこに最も近いかを判定
-        local starPoint = math.floor(((index - 1) / total) * 5)
-        local pointProgress = (((index - 1) / total) * 5) % 1
-        
-        -- 頂点(0.0)から谷(0.5)、次の頂点(1.0)へ
-        local radius
-        if pointProgress < 0.5 then
-            -- 頂点から谷へ
-            radius = outerRadius + (innerRadius - outerRadius) * (pointProgress * 2)
-        else
-            -- 谷から頂点へ
-            radius = innerRadius + (outerRadius - innerRadius) * ((pointProgress - 0.5) * 2)
-        end
-        
-        return Vector3.new(
-            radius * math.cos(baseAngle),
-            0,
-            radius * math.sin(baseAngle)
-        )
-        
     elseif ShapeType == "Heart" then
         -- ハート形
-        local t = (index - 1) / total
-        local angle = t * math.pi * 2 + rotation
-        local scale = size / 4
-        -- ハートの媒介変数方程式
-        local x = scale * 16 * math.sin(angle)^3
-        local z = scale * (13 * math.cos(angle) - 5 * math.cos(2*angle) - 2 * math.cos(3*angle) - math.cos(4*angle))
+        local angle = t * math.pi * 2 - math.pi / 2 + rotation
         
-        return Vector3.new(x, 0, -z)
+        -- ハートの媒介変数方程式
+        local x = 16 * math.sin(angle)^3
+        local y = 13 * math.cos(angle) - 5 * math.cos(2*angle) - 2 * math.cos(3*angle) - math.cos(4*angle)
+        
+        -- サイズに応じてスケール
+        local scale = size / 32
+        
+        return Vector3.new(
+            x * scale,
+            0,
+            y * scale
+        )
     end
     
     return Vector3.new()
@@ -201,7 +195,16 @@ local function startLoop()
         
         tAccum = tAccum + dt * (RotationSpeed / 10)
         
-        local rootVelocity = root.AssemblyLinearVelocity or root.Velocity or Vector3.new()
+        -- ターゲットとなるルートパーツを決定
+        local targetRoot = root
+        if FollowPlayerEnabled then
+            local targetHRP = getTargetHRP()
+            if targetHRP then
+                targetRoot = targetHRP
+            end
+        end
+        
+        local rootVelocity = targetRoot.AssemblyLinearVelocity or targetRoot.Velocity or Vector3.new()
         
         for i, rec in ipairs(list) do
             local part = rec.part
@@ -211,7 +214,7 @@ local function startLoop()
             local localPos = getShapePosition(i, #list, RingSize, tAccum * 0.5)
             localPos = localPos + Vector3.new(0, RingHeight, 0)
             
-            local targetPos = root.Position + localPos
+            local targetPos = targetRoot.Position + localPos
             
             -- BodyVelocityで移動
             local dir = targetPos - part.Position
@@ -230,7 +233,7 @@ local function startLoop()
             -- BodyGyroで回転
             local bg = part:FindFirstChild("BodyGyro")
             if bg then
-                local lookAtCFrame = CFrame.lookAt(targetPos, root.Position) * CFrame.Angles(0, math.pi, 0)
+                local lookAtCFrame = CFrame.lookAt(targetPos, targetRoot.Position) * CFrame.Angles(0, math.pi, 0)
                 bg.CFrame = lookAtCFrame
             end
         end
@@ -247,6 +250,17 @@ local function stopLoop()
         detachPhysics(rec)
     end
     list = {}
+end
+
+-- プレイヤー名リスト取得
+local function getPlayerNames()
+    local names = {}
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LP then
+            table.insert(names, player.Name)
+        end
+    end
+    return names
 end
 
 -- ====================================================================
@@ -269,12 +283,31 @@ Tab:AddToggle({
     end
 })
 
+Tab:AddSection({ Name = "Follow Player" })
+
+Tab:AddDropdown({
+    Name = "ターゲットプレイヤー選択",
+    Default = "",
+    Options = getPlayerNames(),
+    Callback = function(v)
+        TargetPlayerName = v
+    end
+})
+
+Tab:AddToggle({
+    Name = "Follow Player",
+    Default = false,
+    Callback = function(v)
+        FollowPlayerEnabled = v
+    end
+})
+
 Tab:AddSection({ Name = "形状選択" })
 
 Tab:AddDropdown({
     Name = "オーラの形状",
     Default = ShapeType,
-    Options = {"Circle", "Star", "Heart"},
+    Options = {"Circle", "Heart"},
     Callback = function(v)
         ShapeType = v
     end
