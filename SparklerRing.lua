@@ -1,5 +1,5 @@
 -- FireworkSparkler オーラ MOD
--- 高さ5の位置に直径5のリング状に配置・回転 (飛行中も安定)
+-- 高さ5の位置にリング状に配置・回転 (形状選択機能付き)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -22,10 +22,11 @@ local Tab = Window:MakeTab({ Name = "AURA", Icon = "rbxassetid://448336338" })
 
 -- 設定変数
 local Enabled = false
-local RingHeight = 5.0      -- 高さ5
-local RingDiameter = 5.0    -- 直径5 (半径2.5)
-local ObjectCount = 10      -- リングのオブジェクト数
-local RotationSpeed = 20.0  -- 回転速度
+local RingHeight = 5.0
+local RingSize = 5.0        -- 形状全体のサイズ
+local ObjectCount = 10
+local RotationSpeed = 20.0
+local ShapeType = "Circle"  -- 形状タイプ
 
 local list = {}
 local loopConn = nil
@@ -48,13 +49,12 @@ local function getPartFromModel(m)
     return nil
 end
 
--- 物理演算アタッチ (BodyVelocity & BodyGyro)
+-- 物理演算アタッチ
 local function attachPhysics(rec)
     local model = rec.model
     local part = rec.part
     if not model or not part or not part.Parent then return end
     
-    -- ネットワークオーナー設定
     for _, p in ipairs(model:GetDescendants()) do
         if p:IsA("BasePart") then
             pcall(function() p:SetNetworkOwner(LP) end)
@@ -63,7 +63,6 @@ local function attachPhysics(rec)
         end
     end
     
-    -- BodyVelocity追加
     if not part:FindFirstChild("BodyVelocity") then
         local bv = Instance.new("BodyVelocity")
         bv.Name = "BodyVelocity"
@@ -73,7 +72,6 @@ local function attachPhysics(rec)
         bv.Parent = part
     end
     
-    -- BodyGyro追加
     if not part:FindFirstChild("BodyGyro") then
         local bg = Instance.new("BodyGyro")
         bg.Name = "BodyGyro"
@@ -132,7 +130,64 @@ local function rescan()
     end
 end
 
--- メインループ (リング配置と回転) - 飛行中も安定
+-- ★ 形状計算関数 ★
+local function getShapePosition(index, total, size, rotation)
+    if ShapeType == "Circle" then
+        -- 円形
+        local t = (index - 1) / total
+        local angle = t * math.pi * 2 + rotation
+        local radius = size / 2
+        return Vector3.new(
+            radius * math.cos(angle),
+            0,
+            radius * math.sin(angle)
+        )
+        
+    elseif ShapeType == "Star" then
+        -- 星形 (各オブジェクトを星の頂点に配置)
+        local outerRadius = size / 2
+        local innerRadius = outerRadius * 0.38
+        
+        -- 各オブジェクトに対して星の形を作る
+        local angleStep = (math.pi * 2) / total
+        local baseAngle = (index - 1) * angleStep + rotation
+        
+        -- 5つの頂点のどこに最も近いかを判定
+        local starPoint = math.floor(((index - 1) / total) * 5)
+        local pointProgress = (((index - 1) / total) * 5) % 1
+        
+        -- 頂点(0.0)から谷(0.5)、次の頂点(1.0)へ
+        local radius
+        if pointProgress < 0.5 then
+            -- 頂点から谷へ
+            radius = outerRadius + (innerRadius - outerRadius) * (pointProgress * 2)
+        else
+            -- 谷から頂点へ
+            radius = innerRadius + (outerRadius - innerRadius) * ((pointProgress - 0.5) * 2)
+        end
+        
+        return Vector3.new(
+            radius * math.cos(baseAngle),
+            0,
+            radius * math.sin(baseAngle)
+        )
+        
+    elseif ShapeType == "Heart" then
+        -- ハート形
+        local t = (index - 1) / total
+        local angle = t * math.pi * 2 + rotation
+        local scale = size / 4
+        -- ハートの媒介変数方程式
+        local x = scale * 16 * math.sin(angle)^3
+        local z = scale * (13 * math.cos(angle) - 5 * math.cos(2*angle) - 2 * math.cos(3*angle) - math.cos(4*angle))
+        
+        return Vector3.new(x, 0, -z)
+    end
+    
+    return Vector3.new()
+end
+
+-- メインループ
 local function startLoop()
     if loopConn then
         loopConn:Disconnect()
@@ -146,37 +201,25 @@ local function startLoop()
         
         tAccum = tAccum + dt * (RotationSpeed / 10)
         
-        local radius = RingDiameter / 2
-        local angleIncrement = 360 / #list
-        
-        -- HRPの速度を取得 (飛行中も追従させるため)
         local rootVelocity = root.AssemblyLinearVelocity or root.Velocity or Vector3.new()
         
         for i, rec in ipairs(list) do
             local part = rec.part
             if not part or not part.Parent then continue end
             
-            -- 回転角度計算
-            local angle = math.rad(i * angleIncrement + tAccum * 50)
+            -- 形状に応じた位置を計算
+            local localPos = getShapePosition(i, #list, RingSize, tAccum * 0.5)
+            localPos = localPos + Vector3.new(0, RingHeight, 0)
             
-            -- リング上の位置計算 (HRPの向きに関係なく水平リングを維持)
-            local localPos = Vector3.new(
-                radius * math.cos(angle),
-                RingHeight,
-                radius * math.sin(angle)
-            )
-            
-            -- ワールド座標での目標位置 (HRPの回転を無視して水平を維持)
             local targetPos = root.Position + localPos
             
-            -- BodyVelocityで移動 (飛行中の速度も加算)
+            -- BodyVelocityで移動
             local dir = targetPos - part.Position
             local distance = dir.Magnitude
             local bv = part:FindFirstChild("BodyVelocity")
             
             if bv then
                 if distance > 0.1 then
-                    -- HRPの速度を加算して飛行中も追従
                     local moveVelocity = dir.Unit * math.min(3000, distance * 50)
                     bv.Velocity = moveVelocity + rootVelocity
                 else
@@ -184,7 +227,7 @@ local function startLoop()
                 end
             end
             
-            -- BodyGyroで回転 (外側を向く)
+            -- BodyGyroで回転
             local bg = part:FindFirstChild("BodyGyro")
             if bg then
                 local lookAtCFrame = CFrame.lookAt(targetPos, root.Position) * CFrame.Angles(0, math.pi, 0)
@@ -210,10 +253,37 @@ end
 -- UI要素
 -- ====================================================================
 
-Tab:AddSection({ Name = "FireworkSparkler リング設定" })
+Tab:AddSection({ Name = "起動/停止" })
+
+Tab:AddToggle({
+    Name = "FireworkSparkler オーラ ON/OFF",
+    Default = false,
+    Callback = function(v)
+        Enabled = v
+        if v then
+            rescan()
+            startLoop()
+        else
+            stopLoop()
+        end
+    end
+})
+
+Tab:AddSection({ Name = "形状選択" })
+
+Tab:AddDropdown({
+    Name = "オーラの形状",
+    Default = ShapeType,
+    Options = {"Circle", "Star", "Heart"},
+    Callback = function(v)
+        ShapeType = v
+    end
+})
+
+Tab:AddSection({ Name = "FireworkSparkler 設定" })
 
 Tab:AddSlider({
-    Name = "リングの高さ",
+    Name = "形状の高さ",
     Min = 1.0,
     Max = 50.0,
     Default = RingHeight,
@@ -224,13 +294,13 @@ Tab:AddSlider({
 })
 
 Tab:AddSlider({
-    Name = "リングの直径",
+    Name = "形状のサイズ",
     Min = 3.0,
     Max = 100.0,
-    Default = RingDiameter,
+    Default = RingSize,
     Increment = 1.0,
     Callback = function(v)
-        RingDiameter = v
+        RingSize = v
     end
 })
 
@@ -256,22 +326,6 @@ Tab:AddSlider({
     Increment = 5.0,
     Callback = function(v)
         RotationSpeed = v
-    end
-})
-
-Tab:AddSection({ Name = "起動/停止" })
-
-Tab:AddToggle({
-    Name = "FireworkSparkler オーラ ON/OFF",
-    Default = false,
-    Callback = function(v)
-        Enabled = v
-        if v then
-            rescan()
-            startLoop()
-        else
-            stopLoop()
-        end
     end
 })
 
