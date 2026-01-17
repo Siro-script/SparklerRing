@@ -44,10 +44,12 @@ local TreeRingSize = 8.0
 
 -- 設定変数 (Wing)
 local WingEnabled = false
-local WingSpeed = 2.0          -- 上下に動く速さ
-local WingAmplitude = 3.0      -- 上下に動く幅
-local WingSpread = 5.0         -- 横の広がり
-local WingObjectCount = 10     -- 片翼のオブジェクト数
+local WingVerticalOffset = 2.0  -- 縦方向のオフセット
+local WingSpread = 5.0          -- 横の広がり
+local WingObjectCount = 10      -- 片翼のオブジェクト数
+local WingFlapShape = 2.0       -- 羽ばたきの形状（波の周波数）
+local WingFlapSpeed = 1.0       -- 羽ばたく速さ（時間の進み）
+local WingFlapAmount = 3.0      -- 羽ばたく可動域（折りたたみの角度）
 
 local list = {}
 local loopConn = nil
@@ -161,7 +163,11 @@ local function rescan()
         if d:IsA("Model") and d.Name == "FireworkSparkler" then
             local part = getPartFromModel(d)
             if part and not part.Anchored then
-                local rec = { model = d, part = part }
+                local rec = { 
+                    model = d, 
+                    part = part,
+                    index = foundCount + 1  -- インデックスを保存
+                }
                 table.insert(list, rec)
                 foundCount = foundCount + 1
             end
@@ -226,26 +232,34 @@ local function getTreePosition(index, total, rotation)
     )
 end
 
--- ★ Wing形状計算 (横に突き出す) ★
+-- ★ Wing形状計算 (羽ばたく翼) ★
 local function getWingPosition(index, total, time)
     local halfTotal = total / 2
     local isLeftWing = index <= halfTotal
     local wingIndex = isLeftWing and index or (index - halfTotal)
     
-    -- 翼の位置計算（根元から外側へ）
-    local t = (wingIndex - 1) / halfTotal
-    local xOffset = t * WingSpread  -- 横方向に伸びる
+    -- 翼の位置計算（根元から外側へ均等配置）
+    local t = (wingIndex - 1) / (halfTotal - 1)  -- 0から1の範囲
     
-    -- 上下の波動（外側ほど大きく動く）
-    local waveOffset = math.sin(time * WingSpeed + t * math.pi) * WingAmplitude * t
+    -- 羽ばたき計算（角度として計算）
+    local phase = (time * WingFlapSpeed - wingIndex * 0.05) * WingFlapShape
+    local flapAngle = math.sin(phase) * math.rad(WingFlapAmount)  -- 角度をラジアンに変換
     
-    -- 左右の位置（左翼は負、右翼は正）
-    local sideOffset = isLeftWing and -(3 + xOffset) or (3 + xOffset)
+    -- 基本の横位置（等間隔）
+    local baseX = t * WingSpread
+    
+    -- 羽ばたきによる位置変化（角度による回転）
+    -- Z軸（前後）とY軸（上下）の両方を計算
+    local rotatedY = baseX * math.sin(flapAngle)
+    local rotatedX = baseX * math.cos(flapAngle)
+    
+    -- 左右の位置
+    local sideOffset = isLeftWing and -(3 + rotatedX) or (3 + rotatedX)
     
     return Vector3.new(
         sideOffset,
-        waveOffset + 2,  -- 基準高さ2
-        0  -- 前後オフセットなし（真横に）
+        WingVerticalOffset + rotatedY,  -- 高さ + 羽ばたきによる上下
+        0  -- 前後は固定
     )
 end
 
@@ -302,7 +316,17 @@ local function startLoop()
                 localPos = localPos + Vector3.new(0, RingHeight, 0)
             end
             
-            local targetPos = targetRoot.Position + (targetRoot.CFrame - targetRoot.Position):VectorToWorldSpace(localPos)
+            -- ワールド座標に変換（プレイヤーの向きを考慮するがY軸回転のみ）
+            local targetCF
+            if WingEnabled then
+                -- Y軸回転のみを取り出す（水平方向の向きのみ）
+                local _, yRot, _ = targetRoot.CFrame:ToEulerAnglesYXZ()
+                targetCF = CFrame.new(targetRoot.Position) * CFrame.Angles(0, yRot, 0)
+            else
+                targetCF = targetRoot.CFrame
+            end
+            
+            local targetPos = targetCF.Position + (targetCF - targetCF.Position):VectorToWorldSpace(localPos)
             
             -- BodyVelocityで移動
             local dir = targetPos - part.Position
@@ -316,13 +340,15 @@ local function startLoop()
                 else
                     bv.Velocity = rootVelocity
                 end
+                bv.P = 1e6
             end
             
-            -- BodyGyroで回転
+            -- BodyGyroで回転（プレイヤーの方を向く - 光る部分が前向き）
             local bg = part:FindFirstChild("BodyGyro")
             if bg then
                 local lookAtCFrame = CFrame.lookAt(targetPos, targetRoot.Position) * CFrame.Angles(0, math.pi, 0)
                 bg.CFrame = lookAtCFrame
+                bg.P = 1e6
             end
         end
     end)
@@ -554,7 +580,7 @@ ChristmasTab:AddSlider({
 })
 
 -- ====================================================================
--- UI要素 (Wing)
+-- UI要素 (Wing) - 羽ばたく翼
 -- ====================================================================
 
 WingTab:AddSection({ Name = "👼 Wing 起動" })
@@ -578,24 +604,13 @@ WingTab:AddToggle({
 WingTab:AddSection({ Name = "Wing 設定" })
 
 WingTab:AddSlider({
-    Name = "上下に動く速さ",
-    Min = 0.5,
-    Max = 10.0,
-    Default = WingSpeed,
-    Increment = 0.5,
-    Callback = function(v)
-        WingSpeed = v
-    end
-})
-
-WingTab:AddSlider({
-    Name = "上下に動く幅",
-    Min = 1.0,
+    Name = "翼の高さ位置",
+    Min = -10.0,
     Max = 20.0,
-    Default = WingAmplitude,
+    Default = WingVerticalOffset,
     Increment = 0.5,
     Callback = function(v)
-        WingAmplitude = v
+        WingVerticalOffset = v
     end
 })
 
@@ -607,6 +622,39 @@ WingTab:AddSlider({
     Increment = 1.0,
     Callback = function(v)
         WingSpread = v
+    end
+})
+
+WingTab:AddSlider({
+    Name = "羽ばたきの形状 (波の細かさ)",
+    Min = 0.5,
+    Max = 10.0,
+    Default = WingFlapShape,
+    Increment = 0.5,
+    Callback = function(v)
+        WingFlapShape = v
+    end
+})
+
+WingTab:AddSlider({
+    Name = "羽ばたく速さ",
+    Min = 0.1,
+    Max = 5.0,
+    Default = WingFlapSpeed,
+    Increment = 0.1,
+    Callback = function(v)
+        WingFlapSpeed = v
+    end
+})
+
+WingTab:AddSlider({
+    Name = "羽ばたく可動域 (折りたたみ角度)",
+    Min = 0.0,
+    Max = 100.0,
+    Default = WingFlapAmount,
+    Increment = 1.0,
+    Callback = function(v)
+        WingFlapAmount = v
     end
 })
 
