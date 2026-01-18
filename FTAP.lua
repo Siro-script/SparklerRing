@@ -260,7 +260,7 @@ local function getWingPosition(index, total, time)
         sideOffset,
         WingVerticalOffset + rotatedY,  -- 高さ + 羽ばたきによる上下
         0  -- 前後は固定
-    )
+    ), isLeftWing
 end
 
 -- メインループ
@@ -306,9 +306,9 @@ local function startLoop()
             if not part or not part.Parent then continue end
             
             -- 形状に応じた位置を計算
-            local localPos
+            local localPos, isLeftWing
             if WingEnabled then
-                localPos = getWingPosition(i, #list, tAccum)
+                localPos, isLeftWing = getWingPosition(i, #list, tAccum)
             elseif TreeEnabled then
                 localPos = getTreePosition(i, #list, tAccum * 0.5)
             else
@@ -343,11 +343,18 @@ local function startLoop()
                 bv.P = 1e6
             end
             
-            -- BodyGyroで回転（プレイヤーの方を向く - 光る部分が前向き）
+            -- BodyGyroで回転
             local bg = part:FindFirstChild("BodyGyro")
             if bg then
-                local lookAtCFrame = CFrame.lookAt(targetPos, targetRoot.Position) * CFrame.Angles(0, math.pi, 0)
-                bg.CFrame = lookAtCFrame
+                if WingEnabled and isLeftWing then
+                    -- 左翼：逆向き（プレイヤーから離れる方向）
+                    local lookAtCFrame = CFrame.lookAt(targetPos, targetRoot.Position)
+                    bg.CFrame = lookAtCFrame
+                else
+                    -- 右翼・通常オーラ・ツリー：前向き（プレイヤーの方を向く）
+                    local lookAtCFrame = CFrame.lookAt(targetPos, targetRoot.Position) * CFrame.Angles(0, math.pi, 0)
+                    bg.CFrame = lookAtCFrame
+                end
                 bg.P = 1e6
             end
         end
