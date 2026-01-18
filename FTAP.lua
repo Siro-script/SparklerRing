@@ -243,7 +243,19 @@ local function getWingPosition(index, total, time)
     
     -- 羽ばたき計算（角度として計算）
     local phase = (time * WingFlapSpeed - wingIndex * 0.05) * WingFlapShape
-    local flapAngle = math.sin(phase) * math.rad(WingFlapAmount)  -- 角度をラジアンに変換
+    local sinValue = math.sin(phase)
+    
+    -- 上下で折りたたみ角度を変える
+    local actualFlapAmount
+    if sinValue > 0 then
+        -- 上に来た時：折りたたみ角度を60%に
+        actualFlapAmount = WingFlapAmount * 0.6
+    else
+        -- 下に来た時：通常の折りたたみ角度
+        actualFlapAmount = WingFlapAmount
+    end
+    
+    local flapAngle = sinValue * math.rad(actualFlapAmount)
     
     -- 基本の横位置（等間隔）
     local baseX = t * WingSpread
